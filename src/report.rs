@@ -47,6 +47,7 @@ fn todo(c: &Class) -> String {
     match c {
         Class::Neustart => "Deploy genuegt (restartUnits)".into(),
         Class::Uebergabe { takt } => format!("converge-Lauf abwarten ({takt})"),
+        Class::Lauf { takt } => format!("naechster Lauf ({takt})"),
         Class::Einmalig { handgriff } => format!("Handgriff: {handgriff}"),
         Class::Gegenstelle { gegenseite } => format!("Gegenseite: {gegenseite}"),
         Class::Ungedeckt => "kommt NICHT an".into(),

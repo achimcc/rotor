@@ -283,7 +283,14 @@ fn converge_with_a_timer_hands_over_without_a_timer_it_inherits() {
         "[Service]\nLoadCredential=qb\nExecStart={s}c-converge/bin/converge apply {s}h-converge-dc-radarr.json\n"
     );
     let t = f.host(
-        &manifest_json(&[("qb", "/run/secrets/qb", &[])], &[]),
+        &manifest_json(
+            &[(
+                "qb",
+                "/run/secrets/qb",
+                &["container@mit.service", "container@ohne.service"],
+            )],
+            &[],
+        ),
         &[],
         &[
             (
@@ -305,8 +312,8 @@ fn converge_with_a_timer_hands_over_without_a_timer_it_inherits() {
     assert_eq!(class_of(&h, "mit", "anb.service"), "uebergabe");
     assert_eq!(
         class_of(&h, "ohne", "anb.service"),
-        "ungedeckt",
-        "no timer: the container's class, and it has no restart"
+        "neustart",
+        "no timer: the container's class"
     );
     let r = h
         .readers
@@ -565,4 +572,76 @@ fn show_of_an_unknown_secret_is_an_error() {
         &format!("server={}", t.display()),
     ]);
     assert_eq!(code, 2);
+}
+
+#[test]
+fn a_timer_oneshot_reads_again_at_every_run_on_the_host() {
+    let f = Fix::new("lauf");
+    let t = f.host(
+        &manifest_json(&[("k", "/run/secrets/k", &[])], &[]),
+        &[
+            ("probe.service", "[Service]\nType=oneshot\nEnvironmentFile=/run/secrets/k\nExecStart=/bin/x\n"),
+            ("probe.timer", "[Timer]\nOnCalendar=hourly\n"),
+            ("melde@.service", "[Service]\nType=oneshot\nEnvironmentFile=/run/secrets/k\nExecStart=/bin/m\n"),
+            ("bleibt.service", "[Service]\nType=oneshot\nRemainAfterExit=true\nEnvironmentFile=/run/secrets/k\nExecStart=/bin/b\n"),
+            ("bleibt.timer", "[Timer]\nOnCalendar=hourly\n"),
+            ("einmal.service", "[Service]\nType=oneshot\nEnvironmentFile=/run/secrets/k\nExecStart=/bin/e\n"),
+            ("daemon.service", "[Service]\nEnvironmentFile=/run/secrets/k\nExecStart=/bin/d\n"),
+            ("daemon.timer", "[Timer]\nOnCalendar=hourly\n"),
+        ],
+        &[],
+    );
+    let h = graph::analyse("server", &t, &mut scan::Scanner::new(&f.store())).unwrap();
+    assert_eq!(class_of(&h, "server", "probe.service"), "lauf");
+    assert_eq!(
+        class_of(&h, "server", "melde@.service"),
+        "lauf",
+        "a template runs anew at every start"
+    );
+    assert_eq!(
+        class_of(&h, "server", "bleibt.service"),
+        "ungedeckt",
+        "RemainAfterExit: the timer never starts it again"
+    );
+    assert_eq!(
+        class_of(&h, "server", "einmal.service"),
+        "ungedeckt",
+        "boot only"
+    );
+    assert_eq!(
+        class_of(&h, "server", "daemon.service"),
+        "ungedeckt",
+        "not a oneshot"
+    );
+}
+
+#[test]
+fn a_guest_reads_its_containers_frozen_copy() {
+    // nspawn copies credentials when the container starts. Neither a timer
+    // oneshot nor a converge hand-over in the guest sees a new value unless
+    // the container restarts.
+    let f = Fix::new("guest-frozen");
+    let s = f.store();
+    f.file(
+        "store/h-converge-dc-radarr.json",
+        r#"{"desired":{"p":{"secret_fields":{"password":"qb"}}}}"#,
+    );
+    let conv = format!(
+        "[Service]\nType=oneshot\nLoadCredential=qb\nExecStart={s}c-converge/bin/converge apply {s}h-converge-dc-radarr.json\n"
+    );
+    let t = f.host(
+        &manifest_json(&[("qb", "/run/secrets/qb", &[])], &[]),
+        &[],
+        &[(
+            "g",
+            "--load-credential=qb:/run/secrets/qb",
+            &[
+                ("anb.service", &conv),
+                ("anb.timer", "[Timer]\nOnUnitActiveSec=1d\n"),
+            ],
+        )],
+    );
+    let h = graph::analyse("server", &t, &mut scan::Scanner::new(&s)).unwrap();
+    assert_eq!(class_of(&h, "server", "container@g.service"), "ungedeckt");
+    assert_eq!(class_of(&h, "g", "anb.service"), "ungedeckt");
 }

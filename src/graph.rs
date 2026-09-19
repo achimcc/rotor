@@ -16,6 +16,8 @@ pub enum Class {
     Neustart,
     /// converge hands the value over on a timer.
     Uebergabe { takt: String },
+    /// A oneshot on the host that reads the secret afresh at every run.
+    Lauf { takt: String },
     /// Declared: the service took the value once; a hand is needed.
     Einmalig { handgriff: String },
     /// Declared: the value's other half lives elsewhere.
@@ -29,6 +31,7 @@ impl Class {
         match self {
             Class::Neustart => "neustart",
             Class::Uebergabe { .. } => "uebergabe",
+            Class::Lauf { .. } => "lauf",
             Class::Einmalig { .. } => "einmalig",
             Class::Gegenstelle { .. } => "gegenstelle",
             Class::Ungedeckt => "ungedeckt",
@@ -147,6 +150,24 @@ fn timer_for(sys: &System, unit: &str) -> Option<String> {
     Some(parts.join(", "))
 }
 
+/// A oneshot without `RemainAfterExit` that a timer starts, or a template
+/// started per instance, runs anew — and reads `/run/secrets` anew — every
+/// time. Only on the host: a guest reads its container's frozen copy.
+fn runs_afresh(sys: &System, u: &Unit) -> Option<String> {
+    let oneshot = u.last("Service", "Type") == Some("oneshot");
+    let remains = u
+        .last("Service", "RemainAfterExit")
+        .and_then(unit_lint::unit::parse_bool)
+        .unwrap_or(false);
+    if !oneshot || remains {
+        return None;
+    }
+    if u.name.contains("@.") {
+        return Some("bei jedem Start der Vorlage".into());
+    }
+    timer_for(sys, &u.name)
+}
+
 pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, String> {
     let m = manifest::load_for(top)?;
     let systems = load_toplevel(label, top).map_err(|e| format!("{}: {e}", top.display()))?;
@@ -170,7 +191,11 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
                     machine: label.to_owned(),
                     unit: u.name.clone(),
                     via: s.via.clone(),
-                    class: class_for(&s.restart, &u.name),
+                    class: match class_for(&s.restart, &u.name) {
+                        Class::Ungedeckt => runs_afresh(host, u)
+                            .map_or(Class::Ungedeckt, |takt| Class::Lauf { takt }),
+                        c => c,
+                    },
                 });
             }
         }
@@ -204,7 +229,10 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
                         continue;
                     };
                     let mut class = cclass.clone();
-                    if handed_over(u, &prefix)?.contains(&local)
+                    // Only a restarted container brings the new value in; a
+                    // hand-over from its frozen copy hands over the old one.
+                    if cclass == Class::Neustart
+                        && handed_over(u, &prefix)?.contains(&local)
                         && let Some(takt) = timer_for(guest, &u.name)
                     {
                         class = Class::Uebergabe { takt };
