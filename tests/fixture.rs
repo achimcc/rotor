@@ -4,6 +4,13 @@ use std::path::PathBuf;
 
 pub struct Fix(pub PathBuf);
 
+/// (name, path, restartUnits)
+pub type SecretSpec<'a> = (&'a str, &'a str, &'a [&'a str]);
+/// (name, path, content, restartUnits)
+pub type TemplateSpec<'a> = (&'a str, &'a str, &'a str, &'a [&'a str]);
+/// (container, load-credential flags, guest units as (name, text))
+pub type ContainerSpec<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
+
 impl Fix {
     pub fn new(name: &str) -> Self {
         let p = std::env::temp_dir().join(format!("rotor-{}-{name}", std::process::id()));
@@ -34,7 +41,7 @@ impl Fix {
         &self,
         manifest: &str,
         units: &[(&str, &str)],
-        containers: &[(&str, &str, &[(&str, &str)])],
+        containers: &[ContainerSpec],
     ) -> PathBuf {
         let m = self.file("store/mmm-manifest.json", manifest);
         self.file(
@@ -64,10 +71,7 @@ impl Fix {
 }
 
 /// `secrets`: (name, path, restartUnits); `templates`: (name, path, content, restartUnits).
-pub fn manifest_json(
-    secrets: &[(&str, &str, &[&str])],
-    templates: &[(&str, &str, &str, &[&str])],
-) -> String {
+pub fn manifest_json(secrets: &[SecretSpec], templates: &[TemplateSpec]) -> String {
     let s: Vec<_> = secrets
         .iter()
         .map(|(n, p, r)| {
