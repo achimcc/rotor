@@ -4,5 +4,6 @@
 //! and its containers, the files those units run, and the converge specs they
 //! hand over. It never opens a secret; it knows names and paths only.
 
+pub mod converge;
 pub mod manifest;
 pub mod scan;

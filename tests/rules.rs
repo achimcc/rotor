@@ -96,3 +96,48 @@ fn mentions_needs_a_boundary() {
     ));
     assert!(scan::mentions("x=/run/secrets/foo", "/run/secrets/foo"));
 }
+
+use rotor::converge;
+
+#[test]
+fn converge_names_its_handed_over_credentials() {
+    let f = Fix::new("converge");
+    let s = f.store();
+    f.file(
+        "store/h1-converge-download-clients-radarr.json",
+        r#"{"api_key_credential":"radarr-api-key","task":"download-clients",
+      "desired":{"providers":{"qBittorrent":{"secret_fields":{"password":"qbittorrent-webui-password"}}}}}"#,
+    );
+    f.file(
+        "store/h2-converge-plugins-jellyfin.json",
+        r#"{"desired":{"x":{"secrets":{"OmdbApiKey":"jellyfin-omdb-key"}}}}"#,
+    );
+    let u = unit_with(
+        &f,
+        "arr-anbieter.service",
+        &format!(
+            "[Service]\nExecStart={s}c-converge-0.24.0/bin/converge apply {s}h1-converge-download-clients-radarr.json {s}h2-converge-plugins-jellyfin.json\n"
+        ),
+    );
+    let got = converge::handed_over(&u, &s).unwrap();
+    let v: Vec<_> = got.iter().map(String::as_str).collect();
+    assert_eq!(
+        v,
+        ["jellyfin-omdb-key", "qbittorrent-webui-password"],
+        "api_key_credential is converge's own login, not a hand-over"
+    );
+}
+
+#[test]
+fn a_broken_spec_is_an_error_naming_the_path() {
+    let f = Fix::new("converge-broken");
+    let s = f.store();
+    f.file("store/h3-converge-x-y.json", "{");
+    let u = unit_with(
+        &f,
+        "c.service",
+        &format!("[Service]\nExecStart=/bin/converge apply {s}h3-converge-x-y.json\n"),
+    );
+    let e = converge::handed_over(&u, &s).unwrap_err();
+    assert!(e.contains("h3-converge-x-y.json"), "{e}");
+}
