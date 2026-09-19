@@ -141,3 +141,177 @@ fn a_broken_spec_is_an_error_naming_the_path() {
     let e = converge::handed_over(&u, &s).unwrap_err();
     assert!(e.contains("h3-converge-x-y.json"), "{e}");
 }
+
+use rotor::graph::{self, Class};
+
+fn class_of(h: &graph::Host, machine: &str, unit: &str) -> &'static str {
+    h.readers
+        .iter()
+        .find(|r| r.machine == machine && r.unit == unit)
+        .map(|r| r.class.name())
+        .unwrap_or("absent")
+}
+
+#[test]
+fn a_template_without_restart_on_its_container_is_uncovered() {
+    let f = Fix::new("tpl-restart");
+    let t = f.host(
+        &manifest_json(
+            &[("k", "/run/secrets/k", &[])],
+            &[
+                (
+                    "gut",
+                    "/run/secrets/rendered/gut",
+                    &ph("k"),
+                    &["container@g1.service"],
+                ),
+                ("schlecht", "/run/secrets/rendered/schlecht", &ph("k"), &[]),
+            ],
+        ),
+        &[],
+        &[
+            (
+                "g1",
+                "--load-credential=gut:/run/secrets/rendered/gut",
+                &[(
+                    "a.service",
+                    "[Service]\nLoadCredential=gut\nExecStart=/bin/a\n",
+                )],
+            ),
+            (
+                "g2",
+                "--load-credential=schlecht:/run/secrets/rendered/schlecht",
+                &[(
+                    "b.service",
+                    "[Service]\nLoadCredential=schlecht\nExecStart=/bin/b\n",
+                )],
+            ),
+        ],
+    );
+    let h = graph::analyse("server", &t, &mut scan::Scanner::new(&f.store())).unwrap();
+    assert_eq!(class_of(&h, "server", "container@g1.service"), "neustart");
+    assert_eq!(class_of(&h, "g1", "a.service"), "neustart");
+    assert_eq!(class_of(&h, "server", "container@g2.service"), "ungedeckt");
+    assert_eq!(class_of(&h, "g2", "b.service"), "ungedeckt");
+}
+
+#[test]
+fn restart_on_another_unit_does_not_cover_the_reader() {
+    let f = Fix::new("other-unit");
+    let t = f.host(
+        &manifest_json(&[("k", "/run/secrets/k", &["nginx.service"])], &[]),
+        &[
+            (
+                "nginx.service",
+                "[Service]\nLoadCredential=k:/run/secrets/k\nExecStart=/bin/nginx\n",
+            ),
+            (
+                "dritter.service",
+                "[Service]\nEnvironmentFile=/run/secrets/k\nExecStart=/bin/x\n",
+            ),
+        ],
+        &[],
+    );
+    let h = graph::analyse("vps", &t, &mut scan::Scanner::new(&f.store())).unwrap();
+    assert_eq!(class_of(&h, "vps", "nginx.service"), "neustart");
+    assert_eq!(class_of(&h, "vps", "dritter.service"), "ungedeckt");
+}
+
+#[test]
+fn a_reader_in_a_guest_script_two_levels_deep_is_found() {
+    let f = Fix::new("script-reader");
+    let s = f.store();
+    f.file("store/s2-inner", "cat /run/host/credentials/tok\n");
+    f.file("store/s1-outer", &format!("exec {s}s2-inner\n"));
+    let t = f.host(
+        &manifest_json(
+            &[("tok", "/run/secrets/tok", &["container@g.service"])],
+            &[],
+        ),
+        &[],
+        &[(
+            "g",
+            "--load-credential=tok:/run/secrets/tok",
+            &[(
+                "leser.service",
+                &format!("[Service]\nExecStart={s}s1-outer\n"),
+            )],
+        )],
+    );
+    let h = graph::analyse("server", &t, &mut scan::Scanner::new(&s)).unwrap();
+    assert_eq!(class_of(&h, "g", "leser.service"), "neustart");
+}
+
+#[test]
+fn a_guest_unit_that_does_not_read_the_credential_is_no_reader() {
+    let f = Fix::new("non-reader");
+    let t = f.host(
+        &manifest_json(
+            &[("tok", "/run/secrets/tok", &["container@g.service"])],
+            &[],
+        ),
+        &[],
+        &[(
+            "g",
+            "--load-credential=tok:/run/secrets/tok",
+            &[
+                (
+                    "leser.service",
+                    "[Service]\nLoadCredential=lokal:tok\nExecStart=/bin/a\n",
+                ),
+                (
+                    "fremd.service",
+                    "[Service]\nLoadCredential=tokx\nExecStart=/bin/b\n",
+                ),
+            ],
+        )],
+    );
+    let h = graph::analyse("server", &t, &mut scan::Scanner::new(&f.store())).unwrap();
+    assert_eq!(class_of(&h, "g", "leser.service"), "neustart");
+    assert_eq!(class_of(&h, "g", "fremd.service"), "absent");
+}
+
+#[test]
+fn converge_with_a_timer_hands_over_without_a_timer_it_inherits() {
+    let f = Fix::new("converge-timer");
+    let s = f.store();
+    f.file(
+        "store/h-converge-dc-radarr.json",
+        r#"{"desired":{"p":{"secret_fields":{"password":"qb"}}}}"#,
+    );
+    let unit = format!(
+        "[Service]\nLoadCredential=qb\nExecStart={s}c-converge/bin/converge apply {s}h-converge-dc-radarr.json\n"
+    );
+    let t = f.host(
+        &manifest_json(&[("qb", "/run/secrets/qb", &[])], &[]),
+        &[],
+        &[
+            (
+                "mit",
+                "--load-credential=qb:/run/secrets/qb",
+                &[
+                    ("anb.service", &unit),
+                    ("anb.timer", "[Timer]\nOnUnitActiveSec=1d\n"),
+                ],
+            ),
+            (
+                "ohne",
+                "--load-credential=qb:/run/secrets/qb",
+                &[("anb.service", &unit)],
+            ),
+        ],
+    );
+    let h = graph::analyse("server", &t, &mut scan::Scanner::new(&s)).unwrap();
+    assert_eq!(class_of(&h, "mit", "anb.service"), "uebergabe");
+    assert_eq!(
+        class_of(&h, "ohne", "anb.service"),
+        "ungedeckt",
+        "no timer: the container's class, and it has no restart"
+    );
+    let r = h
+        .readers
+        .iter()
+        .find(|r| r.machine == "mit" && r.unit == "anb.service")
+        .unwrap();
+    assert!(matches!(&r.class, Class::Uebergabe { takt } if takt == "OnUnitActiveSec=1d"));
+}
