@@ -369,3 +369,200 @@ fn a_declaration_without_reason_or_hand_is_rejected() {
         assert!(decl::load(&p).is_err(), "{bad}");
     }
 }
+
+fn run(args: &[&str]) -> (i32, String) {
+    rotor::run(args.iter().map(|s| s.to_string()).collect())
+}
+
+#[test]
+fn zero_readers_with_secrets_is_a_measurement_error() {
+    let f = Fix::new("zero");
+    let t = f.host(
+        &manifest_json(&[("k", "/run/secrets/k", &[])], &[]),
+        &[],
+        &[],
+    );
+    let (code, out) = run(&[
+        "check",
+        "--store-prefix",
+        &f.store(),
+        &format!("server={}", t.display()),
+    ]);
+    assert_eq!(code, 2, "{out}");
+}
+
+#[test]
+fn uncovered_is_exit_1_and_named() {
+    let f = Fix::new("exit1");
+    let t = f.host(
+        &manifest_json(&[("k", "/run/secrets/k", &[])], &[]),
+        &[(
+            "x.service",
+            "[Service]\nEnvironmentFile=/run/secrets/k\nExecStart=/bin/x\n",
+        )],
+        &[],
+    );
+    let (code, out) = run(&[
+        "check",
+        "--store-prefix",
+        &f.store(),
+        &format!("server={}", t.display()),
+    ]);
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("ungedeckt") && out.contains("server:x.service"),
+        "{out}"
+    );
+    assert!(out.contains("1 secrets"), "positive control counts: {out}");
+}
+
+#[test]
+fn a_stale_declaration_is_exit_1() {
+    let f = Fix::new("stale-exit");
+    let t = f.host(
+        &manifest_json(&[("k", "/run/secrets/k", &["x.service"])], &[]),
+        &[(
+            "x.service",
+            "[Service]\nEnvironmentFile=/run/secrets/k\nExecStart=/bin/x\n",
+        )],
+        &[],
+    );
+    let d = f.file(
+        "d.json",
+        r#"[{"secret":"k","leser":"server:weg.service","klasse":"einmalig","grund":"x","handgriff":"y"}]"#,
+    );
+    let (code, out) = run(&[
+        "check",
+        "--declarations",
+        d.to_str().unwrap(),
+        "--store-prefix",
+        &f.store(),
+        &format!("server={}", t.display()),
+    ]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("server:weg.service"), "{out}");
+}
+
+#[test]
+fn a_declaration_on_a_guest_reader_is_not_stale() {
+    let f = Fix::new("decl-guest");
+    let t = f.host(
+        &manifest_json(&[("k", "/run/secrets/k", &["container@g.service"])], &[]),
+        &[],
+        &[(
+            "g",
+            "--load-credential=k:/run/secrets/k",
+            &[(
+                "a.service",
+                "[Service]\nLoadCredential=k\nExecStart=/bin/a\n",
+            )],
+        )],
+    );
+    let d = f.file(
+        "d.json",
+        r#"[{"secret":"k","leser":"g:a.service","klasse":"einmalig","grund":"x","handgriff":"y"}]"#,
+    );
+    let (code, out) = run(&[
+        "show",
+        "k",
+        "--declarations",
+        d.to_str().unwrap(),
+        "--store-prefix",
+        &f.store(),
+        &format!("server={}", t.display()),
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("einmalig") && out.contains("Handgriff: y"),
+        "{out}"
+    );
+}
+
+#[test]
+fn no_value_ever_reaches_the_output() {
+    let bait = "KOEDER-9f2c1e77";
+    let f = Fix::new("bait");
+    let s = f.store();
+    f.file(
+        "store/sc-script",
+        &format!("echo {bait} > /run/secrets/k\n"),
+    );
+    let t = f.host(
+        &manifest_json(
+            &[("k", "/run/secrets/k", &[])],
+            &[(
+                "t",
+                "/run/secrets/rendered/t",
+                &format!("A={bait}\nB={}", ph("k")),
+                &[],
+            )],
+        ),
+        &[("x.service", &format!("[Service]\nExecStart={s}sc-script\n"))],
+        &[],
+    );
+    for args in [
+        vec!["check"],
+        vec!["check", "--json"],
+        vec!["show", "k"],
+        vec!["show", "k", "--json"],
+    ] {
+        let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        a.extend([
+            "--store-prefix".to_string(),
+            s.clone(),
+            format!("server={}", t.display()),
+        ]);
+        let (_, out) = rotor::run(a);
+        assert!(
+            out.contains("x.service"),
+            "{args:?} must find the reader: {out}"
+        );
+        assert!(!out.contains(bait), "{args:?}: {out}");
+    }
+}
+
+#[test]
+fn show_names_what_to_do() {
+    let f = Fix::new("show");
+    let t = f.host(
+        &manifest_json(&[("k", "/run/secrets/k", &["x.service"])], &[]),
+        &[(
+            "x.service",
+            "[Service]\nEnvironmentFile=/run/secrets/k\nExecStart=/bin/x\n",
+        )],
+        &[],
+    );
+    let (code, out) = run(&[
+        "show",
+        "k",
+        "--store-prefix",
+        &f.store(),
+        &format!("server={}", t.display()),
+    ]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("server:x.service") && out.contains("Deploy"),
+        "{out}"
+    );
+}
+
+#[test]
+fn show_of_an_unknown_secret_is_an_error() {
+    let f = Fix::new("show-unknown");
+    let t = f.host(
+        &manifest_json(&[("k", "/run/secrets/k", &["x.service"])], &[]),
+        &[(
+            "x.service",
+            "[Service]\nEnvironmentFile=/run/secrets/k\nExecStart=/bin/x\n",
+        )],
+        &[],
+    );
+    let (code, _) = run(&[
+        "show",
+        "tippfehler",
+        "--store-prefix",
+        &f.store(),
+        &format!("server={}", t.display()),
+    ]);
+    assert_eq!(code, 2);
+}
