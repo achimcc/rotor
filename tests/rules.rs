@@ -119,7 +119,7 @@ fn converge_names_its_handed_over_credentials() {
             "[Service]\nExecStart={s}c-converge-0.24.0/bin/converge apply {s}h1-converge-download-clients-radarr.json {s}h2-converge-plugins-jellyfin.json\n"
         ),
     );
-    let got = converge::handed_over(&u, &s).unwrap();
+    let got = converge::handed_over(&scan::Scanner::new(&s).reachable(&u)).unwrap();
     let v: Vec<_> = got.iter().map(String::as_str).collect();
     assert_eq!(
         v,
@@ -138,7 +138,7 @@ fn a_broken_spec_is_an_error_naming_the_path() {
         "c.service",
         &format!("[Service]\nExecStart=/bin/converge apply {s}h3-converge-x-y.json\n"),
     );
-    let e = converge::handed_over(&u, &s).unwrap_err();
+    let e = converge::handed_over(&scan::Scanner::new(&s).reachable(&u)).unwrap_err();
     assert!(e.contains("h3-converge-x-y.json"), "{e}");
 }
 
@@ -644,4 +644,62 @@ fn a_guest_reads_its_containers_frozen_copy() {
     let h = graph::analyse("server", &t, &mut scan::Scanner::new(&s)).unwrap();
     assert_eq!(class_of(&h, "server", "container@g.service"), "ungedeckt");
     assert_eq!(class_of(&h, "g", "anb.service"), "ungedeckt");
+}
+
+#[test]
+fn a_converge_spec_named_in_a_script_is_found_too() {
+    let f = Fix::new("converge-script");
+    let s = f.store();
+    f.file(
+        "store/h-converge-dc-bindery.json",
+        r#"{"desired":{"p":{"secret_fields":{"password":"qb"}}}}"#,
+    );
+    f.file(
+        "store/sk-bindery-anbieter-start",
+        &format!("#!/bin/sh\n{s}c-converge/bin/converge apply {s}h-converge-dc-bindery.json\n"),
+    );
+    let t = f.host(
+        &manifest_json(&[("qb", "/run/secrets/qb", &["container@g.service"])], &[]),
+        &[],
+        &[(
+            "g",
+            "--load-credential=qb:/run/secrets/qb",
+            &[
+                (
+                    "anb.service",
+                    &format!("[Service]\nType=oneshot\nLoadCredential=qb\nExecStart={s}sk-bindery-anbieter-start\n"),
+                ),
+                ("anb.timer", "[Timer]\nOnCalendar=daily\n"),
+            ],
+        )],
+    );
+    let h = graph::analyse("server", &t, &mut scan::Scanner::new(&s)).unwrap();
+    assert_eq!(class_of(&h, "g", "anb.service"), "uebergabe");
+}
+
+#[test]
+fn a_container_is_listed_once_per_way_in() {
+    let f = Fix::new("container-once");
+    let t = f.host(
+        &manifest_json(&[("k", "/run/secrets/k", &["container@g.service"])], &[]),
+        &[(
+            "container@g.service",
+            "[Service]\nExecStart=/bin/nspawn --load-credential=k:/run/secrets/k\n",
+        )],
+        &[(
+            "g",
+            "--load-credential=k:/run/secrets/k",
+            &[(
+                "a.service",
+                "[Service]\nLoadCredential=k\nExecStart=/bin/a\n",
+            )],
+        )],
+    );
+    let h = graph::analyse("server", &t, &mut scan::Scanner::new(&f.store())).unwrap();
+    let n = h
+        .readers
+        .iter()
+        .filter(|r| r.unit == "container@g.service")
+        .count();
+    assert_eq!(n, 1);
 }

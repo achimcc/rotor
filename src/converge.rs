@@ -4,11 +4,9 @@
 //! only a reader. `*_credential` keys are converge's own login to the
 //! service; that credential is read, not handed over.
 
-use crate::scan::store_refs;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
-use unit_lint::unit::Unit;
 
 fn is_spec(path: &str) -> bool {
     let file = path.rsplit('/').next().unwrap_or("");
@@ -35,23 +33,15 @@ fn collect(v: &Value, under_secret: bool, out: &mut BTreeSet<String>) {
     }
 }
 
-/// The credential names the converge specs of `unit` hand over.
-pub fn handed_over(unit: &Unit, prefix: &str) -> Result<BTreeSet<String>, String> {
+/// The credential names the converge specs among `reached` hand over —
+/// the store paths a unit runs, directly or through a script.
+pub fn handed_over(reached: &[String]) -> Result<BTreeSet<String>, String> {
     let mut out = BTreeSet::new();
-    for e in unit
-        .entries
-        .iter()
-        .filter(|e| e.section == "Service" && e.key.starts_with("Exec"))
-    {
-        for p in store_refs(&e.value, prefix)
-            .into_iter()
-            .filter(|p| is_spec(p))
-        {
-            let raw = fs::read_to_string(&p).map_err(|er| format!("{p}: {er}"))?;
-            let v: Value = serde_json::from_str(&raw)
-                .map_err(|er| format!("{p}: not a converge spec: {er}"))?;
-            collect(&v, false, &mut out);
-        }
+    for p in reached.iter().filter(|p| is_spec(p)) {
+        let raw = fs::read_to_string(p).map_err(|er| format!("{p}: {er}"))?;
+        let v: Value =
+            serde_json::from_str(&raw).map_err(|er| format!("{p}: not a converge spec: {er}"))?;
+        collect(&v, false, &mut out);
     }
     Ok(out)
 }

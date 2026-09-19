@@ -115,12 +115,23 @@ impl Scanner {
     /// The unit's own settings as `Key=Value`, and every `/run/` line of the
     /// files it runs, to MAX_DEPTH.
     pub fn lines(&mut self, unit: &Unit) -> Vec<String> {
+        self.walk(unit).0
+    }
+
+    /// Every store path reached from the unit, to MAX_DEPTH — files and
+    /// directories alike, read or not.
+    pub fn reachable(&mut self, unit: &Unit) -> Vec<String> {
+        self.walk(unit).1
+    }
+
+    fn walk(&mut self, unit: &Unit) -> (Vec<String>, Vec<String>) {
         let mut out: Vec<String> = unit
             .entries
             .iter()
             .map(|e| format!("{}={}", e.key, e.value))
             .collect();
         let mut seen = HashSet::new();
+        let mut reached = Vec::new();
         let mut level: Vec<String> = unit
             .entries
             .iter()
@@ -132,6 +143,7 @@ impl Scanner {
                 if !seen.insert(r.clone()) {
                     continue;
                 }
+                reached.push(r.clone());
                 if let Some(i) = self.info(&r) {
                     out.extend(i.lines.iter().cloned());
                     next.extend(i.refs.iter().cloned());
@@ -139,6 +151,6 @@ impl Scanner {
             }
             level = next;
         }
-        out
+        (out, reached)
     }
 }

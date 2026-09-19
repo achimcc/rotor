@@ -172,7 +172,6 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
     let m = manifest::load_for(top)?;
     let systems = load_toplevel(label, top).map_err(|e| format!("{}: {e}", top.display()))?;
     let srcs = sources(&m);
-    let prefix = scanner.prefix().to_owned();
     let mut readers = Vec::new();
     let mut stats = Stats {
         secrets: m.secrets.len(),
@@ -182,7 +181,17 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
 
     let host = &systems[0];
     stats.units += host.units.len();
-    for u in host.units.values() {
+    // A container's own unit is handled below, once per credential it loads.
+    let containers: BTreeSet<String> = systems
+        .iter()
+        .skip(1)
+        .map(|g| format!("container@{}.service", g.name))
+        .collect();
+    for u in host
+        .units
+        .values()
+        .filter(|u| !containers.contains(&u.name))
+    {
         let lines = scanner.lines(u);
         for s in &srcs {
             if lines.iter().any(|l| mentions(l, &s.path)) {
@@ -208,10 +217,10 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
         let conf =
             fs::read_to_string(&conf_path).map_err(|e| format!("{}: {e}", conf_path.display()))?;
         let container_unit = format!("container@{}.service", guest.name);
-        let guest_lines: Vec<(&Unit, Vec<String>)> = guest
+        let guest_lines: Vec<(&Unit, Vec<String>, Vec<String>)> = guest
             .units
             .values()
-            .map(|u| (u, scanner.lines(u)))
+            .map(|u| (u, scanner.lines(u), scanner.reachable(u)))
             .collect();
         for (id, path) in container_credentials(&conf) {
             for s in srcs.iter().filter(|s| s.path == path) {
@@ -224,7 +233,7 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
                     via: via.clone(),
                     class: cclass.clone(),
                 });
-                for (u, lines) in &guest_lines {
+                for (u, lines, reached) in &guest_lines {
                     let Some(local) = local_name(u, lines, &id) else {
                         continue;
                     };
@@ -232,7 +241,7 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
                     // Only a restarted container brings the new value in; a
                     // hand-over from its frozen copy hands over the old one.
                     if cclass == Class::Neustart
-                        && handed_over(u, &prefix)?.contains(&local)
+                        && handed_over(reached)?.contains(&local)
                         && let Some(takt) = timer_for(guest, &u.name)
                     {
                         class = Class::Uebergabe { takt };
