@@ -315,3 +315,57 @@ fn converge_with_a_timer_hands_over_without_a_timer_it_inherits() {
         .unwrap();
     assert!(matches!(&r.class, Class::Uebergabe { takt } if takt == "OnUnitActiveSec=1d"));
 }
+
+use rotor::decl;
+
+fn reader(secret: &str, machine: &str, unit: &str) -> graph::Reader {
+    graph::Reader {
+        secret: secret.into(),
+        machine: machine.into(),
+        unit: unit.into(),
+        via: "secret".into(),
+        class: Class::Neustart,
+    }
+}
+
+#[test]
+fn a_declaration_beats_a_restart() {
+    let f = Fix::new("decl-beats");
+    let p = f.file(
+        "d.json",
+        r#"[{"secret":"g","leser":"obs-01:grafana.service","klasse":"einmalig","grund":"nur beim Anlegen","handgriff":"reset"}]"#,
+    );
+    let d = decl::load(&p).unwrap();
+    let mut rs = vec![reader("g", "obs-01", "grafana.service")];
+    assert!(decl::apply(&mut rs, &d).is_empty());
+    assert_eq!(rs[0].class.name(), "einmalig");
+}
+
+#[test]
+fn a_declaration_without_reader_is_stale() {
+    let f = Fix::new("decl-stale");
+    let p = f.file(
+        "d.json",
+        r#"[{"secret":"g","leser":"obs-01:weg.service","klasse":"gegenstelle","grund":"x","gegenseite":"h"}]"#,
+    );
+    let d = decl::load(&p).unwrap();
+    let mut rs = vec![reader("g", "obs-01", "grafana.service")];
+    assert_eq!(decl::apply(&mut rs, &d).len(), 1);
+    assert_eq!(rs[0].class.name(), "neustart");
+}
+
+#[test]
+fn a_declaration_without_reason_or_hand_is_rejected() {
+    let f = Fix::new("decl-invalid");
+    for bad in [
+        r#"[{"secret":"g","leser":"a:b.service","klasse":"einmalig","grund":"","handgriff":"x"}]"#,
+        r#"[{"secret":"g","leser":"a:b.service","klasse":"einmalig","grund":"x"}]"#,
+        r#"[{"secret":"g","leser":"a:b.service","klasse":"gegenstelle","grund":"x"}]"#,
+        r#"[{"secret":"g","leser":"b.service","klasse":"einmalig","grund":"x","handgriff":"y"}]"#,
+        r#"[{"secret":"g","leser":"a:b.service","klasse":"neustart","grund":"x"}]"#,
+        r#"[{"secret":"g","leser":"a:b.service","klasse":"einmalig","grund":"x","handgriff":"y","tippfehler":1}]"#,
+    ] {
+        let p = f.file("d.json", bad);
+        assert!(decl::load(&p).is_err(), "{bad}");
+    }
+}

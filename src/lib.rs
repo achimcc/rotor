@@ -5,6 +5,7 @@
 //! hand over. It never opens a secret; it knows names and paths only.
 
 pub mod converge;
+pub mod decl;
 pub mod graph;
 pub mod manifest;
 pub mod scan;
