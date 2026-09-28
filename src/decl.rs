@@ -18,6 +18,9 @@ pub struct Decl {
     pub grund: String,
     pub handgriff: Option<String>,
     pub gegenseite: Option<String>,
+    /// `extern`: where the reader lives (a workstation tool, a service
+    /// outside both hosts). It cannot be found, only declared.
+    pub wo: Option<String>,
 }
 
 fn filled(o: &Option<String>) -> bool {
@@ -43,10 +46,13 @@ pub fn load(path: &Path) -> Result<Vec<Decl>, String> {
             "gegenstelle" if !filled(&d.gegenseite) => {
                 return Err(format!("{at}: gegenstelle needs gegenseite"));
             }
-            "einmalig" | "gegenstelle" => {}
+            "extern" if !filled(&d.wo) => {
+                return Err(format!("{at}: extern needs wo"));
+            }
+            "einmalig" | "gegenstelle" | "extern" => {}
             k => {
                 return Err(format!(
-                    "{at}: klasse {k} cannot be declared (only einmalig, gegenstelle)"
+                    "{at}: klasse {k} cannot be declared (only einmalig, gegenstelle, extern)"
                 ));
             }
         }
@@ -58,7 +64,7 @@ pub fn load(path: &Path) -> Result<Vec<Decl>, String> {
 /// declarations that named none.
 pub fn apply(readers: &mut [Reader], decls: &[Decl]) -> Vec<Decl> {
     let mut stale = Vec::new();
-    for d in decls {
+    for d in decls.iter().filter(|d| d.klasse != "extern") {
         let mut hit = false;
         for r in readers
             .iter_mut()
@@ -80,4 +86,27 @@ pub fn apply(readers: &mut [Reader], decls: &[Decl]) -> Vec<Decl> {
         }
     }
     stale
+}
+
+/// Readers outside the built systems (audit 3, CD-7: K9 — tofu on the
+/// workstation kept writing the old qBittorrent password for seven hours).
+/// They cannot be found, so each `extern` declaration IS the reader. It is
+/// stale when no host knows the secret.
+pub fn externals(decls: &[Decl]) -> Vec<Reader> {
+    decls
+        .iter()
+        .filter(|d| d.klasse == "extern")
+        .map(|d| {
+            let (machine, unit) = d.leser.split_once(':').unwrap_or(("extern", &d.leser));
+            Reader {
+                secret: d.secret.clone(),
+                machine: machine.to_owned(),
+                unit: unit.to_owned(),
+                via: "deklariert".into(),
+                class: Class::Extern {
+                    wo: d.wo.clone().unwrap_or_default(),
+                },
+            }
+        })
+        .collect()
 }

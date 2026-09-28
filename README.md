@@ -18,6 +18,8 @@ for every secret, each unit that reads it and how a new value gets there:
 | `uebergabe` | a [converge](https://github.com/achimcc/converge) spec hands the credential over, and a timer runs it | yes, at the next run (the schedule is shown) |
 | `einmalig` | **declared**: the service takes the value once | no — the declaration names the manual step |
 | `gegenstelle` | **declared**: the value's other half lives elsewhere | only together with the other side |
+| `aktivierung` | the activation script (`<toplevel>/activate` and what it runs) reads it | yes, with the deploy — unless declared otherwise (an initrd copy arrives only with a reboot) |
+| `extern` | **declared**: a reader outside the built systems (a workstation tool) | only if you run it there |
 | `ungedeckt` | found, and none of the above | **no — a finding** |
 
 Whether a service reads a value only on first start is a property of the
@@ -46,15 +48,19 @@ rotor check --declarations decl.json "server=$server"
 rotor show grafana-admin-password --declarations decl.json "server=$server"
 ```
 
-`check` lists every `ungedeckt` reader and every declaration that matches no
-reader. `show` lists all readers of one secret with what to do after rotating
+`check` lists every `ungedeckt` reader, every declaration that matches no
+reader, every secret that has **no reader at all** (`ohne-leser`: a reader rotor
+cannot see looks exactly like that), and, as a hint, every host unit that names
+`/run/secrets` without a full path rotor knows (`unklar`: a path built from a
+variable). Files named under `/etc` are resolved in the toplevel's `etc`; the
+sops-nix manifest itself is never taken for a reader. `show` lists all readers of one secret with what to do after rotating
 it. Every run prints how many secrets, templates, units, containers and files
 it saw.
 
 | exit | meaning |
 |---|---|
 | 0 | every reader is covered |
-| 1 | an `ungedeckt` reader, or a declaration without a reader |
+| 1 | an `ungedeckt` reader, a declaration without a reader, or a secret without any reader |
 | 2 | a measurement error: unreadable file, missing manifest, broken JSON — or **no reader at all although there are secrets** (a scan that sees nothing is broken, not clean) |
 
 ## Declarations
@@ -73,8 +79,10 @@ A JSON list; each entry names one secret and one reader:
 ```
 
 `leser` is `<machine>:<unit>`, the machine being a host label or a container
-name. `grund` is required; `einmalig` requires `handgriff`, `gegenstelle`
-requires `gegenseite`. A declaration beats a recognised class. One that matches
+name (`activation` for the activation script). `grund` is required; `einmalig`
+requires `handgriff`, `gegenstelle` requires `gegenseite`, `extern` requires
+`wo`. An `extern` declaration IS its reader (it cannot be found); it is stale
+when no host knows the secret. A declaration beats a recognised class. One that matches
 no reader fails the run, so the list cannot go stale silently.
 
 ## How readers are found

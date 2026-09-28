@@ -36,7 +36,7 @@ pub struct Manifest {
 }
 
 /// Every token in `activate` that names a `…-manifest*.json` file.
-fn manifest_paths(activate: &str) -> Vec<String> {
+pub fn manifest_paths(activate: &str) -> Vec<String> {
     let mut out: Vec<String> = activate
         .split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
         .filter(|t| t.starts_with('/') && t.ends_with(".json"))

@@ -1,6 +1,6 @@
 [package]
 name = "rotor"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "Who reads a secret on a NixOS host, and does a rotation reach them?"

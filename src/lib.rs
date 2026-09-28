@@ -87,14 +87,27 @@ fn run_inner(args: Vec<String>) -> Result<(i32, String), String> {
             }
         }
     }
-    let stale: Vec<_> = ds
+    let mut stale: Vec<_> = ds
         .iter()
         .zip(&hit)
-        .filter(|(_, h)| !**h)
+        .filter(|(d, h)| !**h && d.klasse != "extern")
         .map(|(d, _)| d.clone())
         .collect();
+    // An `extern` reader of a secret no host knows is stale too.
+    stale.extend(
+        ds.iter()
+            .filter(|d| {
+                d.klasse == "extern"
+                    && !hosts
+                        .iter()
+                        .any(|h| h.secrets.contains(&d.secret))
+            })
+            .cloned(),
+    );
+    let externals = decl::externals(&ds);
     let o = report::Outcome {
         hosts,
+        externals,
         stale,
         files_read: scanner.files_read,
         binaries_skipped: scanner.binaries_skipped,

@@ -24,6 +24,11 @@ struct FileInfo {
 
 pub struct Scanner {
     prefix: String,
+    /// Files never followed: the sops-nix manifest names EVERY secret path,
+    /// and reached from `activate` it would make every secret look read.
+    pub skip: HashSet<String>,
+    /// Where `/etc/…` resolves for the system being scanned (`<toplevel>/etc`).
+    pub etc_root: Option<std::path::PathBuf>,
     cache: HashMap<String, Option<Rc<FileInfo>>>,
     pub files_read: usize,
     pub binaries_skipped: usize,
@@ -66,6 +71,8 @@ impl Scanner {
     pub fn new(prefix: &str) -> Self {
         Scanner {
             prefix: prefix.to_owned(),
+            skip: HashSet::new(),
+            etc_root: None,
             cache: HashMap::new(),
             files_read: 0,
             binaries_skipped: 0,
@@ -77,6 +84,9 @@ impl Scanner {
     }
 
     fn info(&mut self, path: &str) -> Option<Rc<FileInfo>> {
+        if self.skip.contains(path) {
+            return None;
+        }
         if let Some(c) = self.cache.get(path) {
             return c.clone();
         }
@@ -89,6 +99,7 @@ impl Scanner {
                     let mut refs = Vec::new();
                     for l in text.lines() {
                         refs.extend(store_refs(l, &self.prefix));
+                        refs.extend(self.etc_files(l));
                         if l.contains("/run/") {
                             lines.push(l.to_owned());
                         }
@@ -124,19 +135,54 @@ impl Scanner {
         self.walk(unit).1
     }
 
+    /// `/etc/<p>` in a line, as the file under `etc_root` (audit 3, CD-7: a
+    /// config file in /etc that names a secret path was a reader rotor could
+    /// not see). The file there is a link into the store; reading follows it.
+    fn etc_files(&self, line: &str) -> Vec<String> {
+        let Some(root) = &self.etc_root else {
+            return Vec::new();
+        };
+        store_refs(line, "/etc/")
+            .into_iter()
+            .map(|p| {
+                root.join(&p["/etc/".len()..])
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    }
+
+    /// Every `/run/` line of a FILE and what it runs, to MAX_DEPTH — for the
+    /// activation script, which is no unit.
+    pub fn file_lines(&mut self, path: &str) -> Vec<String> {
+        self.walk_from(Vec::new(), vec![path.to_owned()]).0
+    }
+
     fn walk(&mut self, unit: &Unit) -> (Vec<String>, Vec<String>) {
-        let mut out: Vec<String> = unit
+        let own: Vec<String> = unit
             .entries
             .iter()
             .map(|e| format!("{}={}", e.key, e.value))
             .collect();
-        let mut seen = HashSet::new();
-        let mut reached = Vec::new();
-        let mut level: Vec<String> = unit
+        let level: Vec<String> = unit
             .entries
             .iter()
-            .flat_map(|e| store_refs(&e.value, &self.prefix))
+            .flat_map(|e| {
+                let mut r = store_refs(&e.value, &self.prefix);
+                r.extend(self.etc_files(&e.value));
+                r
+            })
             .collect();
+        self.walk_from(own, level)
+    }
+
+    fn walk_from(
+        &mut self,
+        mut out: Vec<String>,
+        mut level: Vec<String>,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut seen = HashSet::new();
+        let mut reached = Vec::new();
         for _ in 0..MAX_DEPTH {
             let mut next = Vec::new();
             for r in level {

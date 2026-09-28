@@ -22,6 +22,11 @@ pub enum Class {
     Einmalig { handgriff: String },
     /// Declared: the value's other half lives elsewhere.
     Gegenstelle { gegenseite: String },
+    /// The activation script reads it: every switch re-reads it, so a deploy
+    /// brings the new value (unless declared otherwise, e.g. an initrd copy).
+    Aktivierung,
+    /// Declared: a reader outside the built systems (a workstation tool).
+    Extern { wo: String },
     /// Found, and none of the above: a rotation does not reach it.
     Ungedeckt,
 }
@@ -34,6 +39,8 @@ impl Class {
             Class::Lauf { .. } => "lauf",
             Class::Einmalig { .. } => "einmalig",
             Class::Gegenstelle { .. } => "gegenstelle",
+            Class::Aktivierung => "aktivierung",
+            Class::Extern { .. } => "extern",
             Class::Ungedeckt => "ungedeckt",
         }
     }
@@ -63,6 +70,17 @@ pub struct Host {
     pub stats: Stats,
     pub readers: Vec<Reader>,
     pub secrets: Vec<String>,
+    /// `<machine>:<unit>` on the host whose lines name `/run/secrets`
+    /// without any full path rotor knows — a path built
+    /// from a variable (`$d/k`, `/run/secrets/$NAME`). Named, not guessed.
+    pub unklar: Vec<String>,
+}
+
+/// A line that reaches into sops-nix's directory, for the `unklar` check.
+/// Only on the host: a guest reads its credentials through
+/// `/run/credentials/<unit>/…`, which is its own and names no host path.
+fn secret_dir(line: &str) -> bool {
+    line.contains("/run/secrets")
 }
 
 struct Source {
@@ -171,6 +189,11 @@ fn runs_afresh(sys: &System, u: &Unit) -> Option<String> {
 pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, String> {
     let m = manifest::load_for(top)?;
     let systems = load_toplevel(label, top).map_err(|e| format!("{}: {e}", top.display()))?;
+    let act = top.join("activate");
+    let act_text = fs::read_to_string(&act).map_err(|e| format!("{}: {e}", act.display()))?;
+    scanner.skip.extend(manifest::manifest_paths(&act_text));
+    scanner.etc_root = Some(top.join("etc"));
+    let mut unklar = Vec::new();
     let srcs = sources(&m);
     let mut readers = Vec::new();
     let mut stats = Stats {
@@ -193,6 +216,12 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
         .filter(|u| !containers.contains(&u.name))
     {
         let lines = scanner.lines(u);
+        if lines
+            .iter()
+            .any(|l| secret_dir(l) && !srcs.iter().any(|s| mentions(l, &s.path)))
+        {
+            unklar.push(format!("{label}:{}", u.name));
+        }
         for s in &srcs {
             if lines.iter().any(|l| mentions(l, &s.path)) {
                 readers.push(Reader {
@@ -210,6 +239,23 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
         }
     }
 
+    // The activation script (audit 3, CD-7): it copies and decodes secrets
+    // outside any unit, e.g. into an initrd or a CA bundle. The manifest is
+    // skipped above — it names every path and is sops-nix's, not a reader.
+    let act_path = act.to_string_lossy().into_owned();
+    let act_lines = scanner.file_lines(&act_path);
+    for s in &srcs {
+        if act_lines.iter().any(|l| mentions(l, &s.path)) {
+            readers.push(Reader {
+                secret: s.secret.clone(),
+                machine: label.to_owned(),
+                unit: "activation".into(),
+                via: s.via.clone(),
+                class: Class::Aktivierung,
+            });
+        }
+    }
+
     for guest in systems.iter().skip(1) {
         stats.containers += 1;
         stats.units += guest.units.len();
@@ -217,6 +263,10 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
         let conf =
             fs::read_to_string(&conf_path).map_err(|e| format!("{}: {e}", conf_path.display()))?;
         let container_unit = format!("container@{}.service", guest.name);
+        scanner.etc_root = conf
+            .lines()
+            .find_map(|l| l.strip_prefix("SYSTEM_PATH="))
+            .map(|p| Path::new(p.trim()).join("etc"));
         let guest_lines: Vec<(&Unit, Vec<String>, Vec<String>)> = guest
             .units
             .values()
@@ -258,10 +308,13 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
         }
     }
     let secrets = m.secrets.iter().map(|s| s.name.clone()).collect();
+    unklar.sort();
+    unklar.dedup();
     Ok(Host {
         label: label.to_owned(),
         stats,
         readers,
         secrets,
+        unklar,
     })
 }

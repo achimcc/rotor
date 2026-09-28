@@ -9,6 +9,8 @@ use std::fmt::Write;
 
 pub struct Outcome {
     pub hosts: Vec<Host>,
+    /// Declared readers outside the built systems (`extern`).
+    pub externals: Vec<Reader>,
     pub stale: Vec<Decl>,
     pub files_read: usize,
     pub binaries_skipped: usize,
@@ -16,7 +18,26 @@ pub struct Outcome {
 
 impl Outcome {
     pub fn readers(&self) -> impl Iterator<Item = &Reader> {
-        self.hosts.iter().flat_map(|h| h.readers.iter())
+        self.hosts
+            .iter()
+            .flat_map(|h| h.readers.iter())
+            .chain(self.externals.iter())
+    }
+
+    /// `(host, secret)` for every secret of a host that no reader reads —
+    /// neither found nor declared. Audit 3, CD-7: a reader rotor cannot see
+    /// looked exactly like this, and the run ended with exit 0.
+    pub fn without_reader(&self) -> Vec<(&str, &str)> {
+        let read: BTreeSet<&str> = self.readers().map(|r| r.secret.as_str()).collect();
+        self.hosts
+            .iter()
+            .flat_map(|h| {
+                h.secrets
+                    .iter()
+                    .filter(|s| !read.contains(s.as_str()))
+                    .map(move |s| (h.label.as_str(), s.as_str()))
+            })
+            .collect()
     }
 
     fn secret_count(&self) -> usize {
@@ -36,7 +57,10 @@ pub fn exit_code(o: &Outcome) -> i32 {
     if o.secret_count() > 0 && o.readers().next().is_none() {
         return 2;
     }
-    if o.readers().any(|r| r.class == Class::Ungedeckt) || !o.stale.is_empty() {
+    if o.readers().any(|r| r.class == Class::Ungedeckt)
+        || !o.stale.is_empty()
+        || !o.without_reader().is_empty()
+    {
         1
     } else {
         0
@@ -50,6 +74,10 @@ fn todo(c: &Class) -> String {
         Class::Lauf { takt } => format!("naechster Lauf ({takt})"),
         Class::Einmalig { handgriff } => format!("Handgriff: {handgriff}"),
         Class::Gegenstelle { gegenseite } => format!("Gegenseite: {gegenseite}"),
+        Class::Aktivierung => {
+            "Deploy genuegt (das Aktivierungsskript liest bei jedem Switch)".into()
+        }
+        Class::Extern { wo } => format!("ausserhalb: {wo}"),
         Class::Ungedeckt => "kommt NICHT an".into(),
     }
 }
@@ -98,13 +126,17 @@ pub fn text_check(o: &Outcome) -> String {
             d.secret, d.leser
         );
     }
-    let read: BTreeSet<&str> = o.readers().map(|r| r.secret.as_str()).collect();
+    for (h, s) in o.without_reader() {
+        let _ = writeln!(
+            out,
+            "ohne-leser {h}: {s} -- kein Leser gefunden und keiner deklariert (lib/rotation.nix: extern, oder das Geheimnis streichen)"
+        );
+    }
     for h in &o.hosts {
-        for s in h.secrets.iter().filter(|s| !read.contains(s.as_str())) {
+        for u in &h.unklar {
             let _ = writeln!(
                 out,
-                "hinweis    {}: {s} hat keinen gefundenen Leser",
-                h.label
+                "unklar     {u}: nennt /run/secrets ohne vollen Pfad -- ein Leser ueber eine Variable?"
             );
         }
     }
@@ -150,7 +182,13 @@ pub fn json(o: &Outcome, secret: Option<&str>) -> String {
                    "units": h.stats.units, "containers": h.stats.containers})
         })
         .collect();
+    let without: Vec<_> = o
+        .without_reader()
+        .iter()
+        .map(|(h, s)| json!({"host": h, "secret": s}))
+        .collect();
+    let unklar: Vec<_> = o.hosts.iter().flat_map(|h| h.unklar.iter()).collect();
     json!({"hosts": hosts, "files_read": o.files_read, "binaries_skipped": o.binaries_skipped,
-           "readers": readers, "stale": stale})
+           "readers": readers, "stale": stale, "without_reader": without, "unklar": unklar})
     .to_string()
 }
