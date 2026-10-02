@@ -97,10 +97,7 @@ fn run_inner(args: Vec<String>) -> Result<(i32, String), String> {
     stale.extend(
         ds.iter()
             .filter(|d| {
-                d.klasse == "extern"
-                    && !hosts
-                        .iter()
-                        .any(|h| h.secrets.contains(&d.secret))
+                d.klasse == "extern" && !hosts.iter().any(|h| h.secrets.contains(&d.secret))
             })
             .cloned(),
     );
