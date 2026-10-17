@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "rotor"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "lexopt",
  "serde",
@@ -150,8 +150,8 @@ checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
 
 [[package]]
 name = "unit-lint"
-version = "0.1.0"
-source = "git+https://github.com/achimcc/unit-lint?tag=v0.1.0#185228e52a6a8669ff0120c5bd06501cbbe05f69"
+version = "0.2.0"
+source = "git+https://github.com/achimcc/unit-lint?tag=v0.2.0#ce43231b30718f1afd2d027cd3da5c0978cb5de0"
 dependencies = [
  "lexopt",
  "serde",

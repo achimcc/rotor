@@ -33,7 +33,7 @@
           cargoLock = {
             lockFile = ./Cargo.lock;
             # The unit loader comes from unit-lint, pinned to its tag in Cargo.toml.
-            outputHashes."unit-lint-0.1.0" = "sha256-SyzzVhWNvMaUjeC+ovtgSLf+YLcultbfIcjGBqc3zXc=";
+            outputHashes."unit-lint-0.2.0" = "sha256-/dK+SgpLGaQlmiqHwAGQkB6GNu6TYv592NiVs/7cN+k=";
           };
           meta = {
             description = "Who reads a secret on a NixOS host, and does a rotation reach them?";
