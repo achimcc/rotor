@@ -189,9 +189,9 @@ fn runs_afresh(sys: &System, u: &Unit) -> Option<String> {
 pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, String> {
     let m = manifest::load_for(top)?;
     let systems = load_toplevel(label, top).map_err(|e| format!("{}: {e}", top.display()))?;
-    let act = top.join("activate");
-    let act_text = fs::read_to_string(&act).map_err(|e| format!("{}: {e}", act.display()))?;
-    scanner.skip.extend(manifest::manifest_paths(&act_text));
+    scanner
+        .skip
+        .extend(manifest::manifest_paths(&manifest::manifest_sources(top)?));
     scanner.etc_root = Some(top.join("etc"));
     let mut unklar = Vec::new();
     let srcs = sources(&m);
@@ -214,6 +214,9 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
         .units
         .values()
         .filter(|u| !containers.contains(&u.name))
+        // The installer writes every secret; it reads none on behalf of a
+        // service, and a rotation reaches it by construction.
+        .filter(|u| !manifest::INSTALL_UNITS.contains(&u.name.as_str()))
     {
         let lines = scanner.lines(u);
         if lines
@@ -242,7 +245,7 @@ pub fn analyse(label: &str, top: &Path, scanner: &mut Scanner) -> Result<Host, S
     // The activation script (audit 3, CD-7): it copies and decodes secrets
     // outside any unit, e.g. into an initrd or a CA bundle. The manifest is
     // skipped above — it names every path and is sops-nix's, not a reader.
-    let act_path = act.to_string_lossy().into_owned();
+    let act_path = top.join("activate").to_string_lossy().into_owned();
     let act_lines = scanner.file_lines(&act_path);
     for s in &srcs {
         if act_lines.iter().any(|l| mentions(l, &s.path)) {

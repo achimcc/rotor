@@ -48,16 +48,40 @@ pub fn manifest_paths(activate: &str) -> Vec<String> {
     out
 }
 
-/// The merged manifests a toplevel's `activate` names. A toplevel without one
-/// is an error, not "no secrets": a missing manifest must not read as green.
-pub fn load_for(top: &Path) -> Result<Manifest, String> {
+/// The units sops-nix installs secrets with when `sops.useSystemdActivation`
+/// is set (or sysusers/userborn are on). Their manifest then no longer
+/// appears in `activate`, only in the unit's `ExecStart`.
+pub const INSTALL_UNITS: [&str; 2] = [
+    "sops-install-secrets.service",
+    "sops-install-secrets-for-users.service",
+];
+
+/// Everything that can name a manifest: `activate` and the install units, if
+/// the toplevel has them.
+pub fn manifest_sources(top: &Path) -> Result<String, String> {
     let act = top.join("activate");
-    let text = fs::read_to_string(&act).map_err(|e| format!("{}: {e}", act.display()))?;
+    let mut text = fs::read_to_string(&act).map_err(|e| format!("{}: {e}", act.display()))?;
+    for u in INSTALL_UNITS {
+        let p = top.join("etc/systemd/system").join(u);
+        if let Ok(t) = fs::read_to_string(&p) {
+            text.push('\n');
+            text.push_str(&t);
+        }
+    }
+    Ok(text)
+}
+
+/// The merged manifests a toplevel names, in `activate` or in an install
+/// unit. A toplevel without one is an error, not "no secrets": a missing
+/// manifest must not read as green.
+pub fn load_for(top: &Path) -> Result<Manifest, String> {
+    let text = manifest_sources(top)?;
     let paths = manifest_paths(&text);
     if paths.is_empty() {
         return Err(format!(
-            "{}: no sops-nix manifest named in activate",
-            act.display()
+            "{}: no sops-nix manifest named in activate or in {}",
+            top.display(),
+            INSTALL_UNITS.join(", ")
         ));
     }
     let mut all = Manifest::default();

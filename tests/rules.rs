@@ -703,3 +703,54 @@ fn a_container_is_listed_once_per_way_in() {
         .count();
     assert_eq!(n, 1);
 }
+
+// sops.useSystemdActivation (homeserver, 2026-11-15): the manifest moves from
+// `activate` into the ExecStart of sops-install-secrets.service. rotor saw
+// one reader instead of 836 until it looked there too.
+#[test]
+fn manifest_is_found_through_the_install_unit() {
+    let f = Fix::new("install-unit");
+    let t = f.host(
+        &manifest_json(&[("k", "/run/secrets/k", &["leser.service"])], &[]),
+        &[(
+            "leser.service",
+            "[Service]\nExecStart=/bin/cat /run/secrets/k\n",
+        )],
+        &[],
+    );
+    let m = f.path("store/mmm-manifest.json");
+    f.file("top/activate", "#!/bin/sh\ntrue\n");
+    f.file(
+        "top/etc/systemd/system/sops-install-secrets.service",
+        &format!(
+            "[Service]\nEnvironment=\"SOPS_RESTART_UNITS_VIA_SYSTEMCTL=1\"\nExecStart=/bin/sops-install-secrets {}\n",
+            m.display()
+        ),
+    );
+    let names: Vec<_> = manifest::load_for(&t)
+        .unwrap()
+        .secrets
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(names, ["k"]);
+    let h = graph::analyse("server", &t, &mut scan::Scanner::new(&f.store())).unwrap();
+    assert_eq!(class_of(&h, "server", "leser.service"), "neustart");
+    assert_eq!(
+        class_of(&h, "server", "sops-install-secrets.service"),
+        "absent"
+    );
+    assert!(h.unklar.is_empty(), "{:?}", h.unklar);
+}
+
+#[test]
+fn without_activate_manifest_and_install_unit_it_stays_an_error() {
+    let f = Fix::new("no-manifest-anywhere");
+    f.file("top/activate", "#!/bin/sh\ntrue\n");
+    f.file(
+        "top/etc/systemd/system/sops-install-secrets.service",
+        "[Service]\nExecStart=/bin/true\n",
+    );
+    let e = manifest::load_for(&f.path("top")).unwrap_err();
+    assert!(e.contains("no sops-nix manifest"), "{e}");
+}
